@@ -1745,7 +1745,8 @@ void BrainView::render(QRhiCommandBuffer *cb)
             if (!sv.shouldRenderSurface(key)) continue;
             if (!surf->isVisible()) continue;
             if (key.startsWith(QLatin1String("dig_live_t_"))
-                || key.startsWith(QLatin1String("dig_liveray_"))) {
+                || key.startsWith(QLatin1String("dig_ray_"))
+                || key.startsWith(QLatin1String("dig_probe_"))) {
                 QVector3D bmin, bmax;
                 surf->boundingBox(bmin, bmax);
                 QVector3D ctr = (bmin + bmax) * 0.5f;
@@ -3129,11 +3130,11 @@ void BrainView::setLiveRay(const QVector3D& from, const QVector3D& to,
                             const QColor& color, float radius)
 {
     // Remove previous ray surface
-    m_surfaces.remove(QLatin1String("dig_liveray_0"));
+    m_surfaces.remove(QLatin1String("dig_ray_0"));
 
     auto surf = MeshFactory::createCylinder(from, to, radius, color);
     surf->setVisible(true);
-    m_surfaces[QStringLiteral("dig_liveray_0")] = surf;
+    m_surfaces[QStringLiteral("dig_ray_0")] = surf;
 
     m_sceneDirty = true;
     update();
@@ -3141,7 +3142,54 @@ void BrainView::setLiveRay(const QVector3D& from, const QVector3D& to,
 
 void BrainView::clearLiveRay()
 {
-    if (m_surfaces.remove(QLatin1String("dig_liveray_0"))) {
+    if (m_surfaces.remove(QLatin1String("dig_ray_0"))) {
+        m_sceneDirty = true;
+        update();
+    }
+}
+
+void BrainView::setProbeVisualization(const QVector3D& tip, const QVector3D& direction,
+                                       float length, const QColor& color,
+                                       const QColor& glowColor)
+{
+    // Remove previous probe surfaces
+    m_surfaces.remove(QLatin1String("dig_probe_shaft"));
+    m_surfaces.remove(QLatin1String("dig_probe_tip"));
+    m_surfaces.remove(QLatin1String("dig_probe_tipglow"));
+
+    // Shaft: hair-thin hint line — just enough to show direction
+    const QVector3D shaftEnd = tip - direction * length;
+    constexpr float kShaftRadius = 0.0003f; // 0.3 mm — barely visible hint
+    auto shaft = MeshFactory::createCylinder(tip, shaftEnd, kShaftRadius, color);
+    shaft->setVisible(true);
+    m_surfaces[QStringLiteral("dig_probe_shaft")] = shaft;
+
+    // Tip: pinpoint sphere — the focal point of the probe
+    constexpr float kTipRadius = 0.0007f; // 0.7 mm — needle-point precision
+    auto tipSurf = MeshFactory::createBatchedSpheres({tip}, kTipRadius, color);
+    tipSurf->setVisible(true);
+    m_surfaces[QStringLiteral("dig_probe_tip")] = tipSurf;
+
+    // Glow aura: visible halo around the tip that pulses with the
+    // incoming glowColor alpha — large enough to clearly surround the core.
+    if (glowColor.alpha() > 0) {
+        constexpr float kGlowTipRadius = 0.004f; // 4 mm — clearly visible pulse ring
+        auto tipGlow = MeshFactory::createBatchedSpheres({tip}, kGlowTipRadius, glowColor);
+        tipGlow->setVisible(true);
+        m_surfaces[QStringLiteral("dig_probe_tipglow")] = tipGlow;
+    }
+
+    m_sceneDirty = true;
+    update();
+}
+
+void BrainView::clearProbeVisualization()
+{
+    bool removed = false;
+    removed |= m_surfaces.remove(QLatin1String("dig_probe_shaft"));
+    removed |= m_surfaces.remove(QLatin1String("dig_probe_tip"));
+    removed |= m_surfaces.remove(QLatin1String("dig_probe_tipglow"));
+    if (removed) {
         m_sceneDirty = true;
         update();
     }
