@@ -79,6 +79,7 @@ private slots:
     void testSliceOrientations();
     void testRasVoxelRoundTrip();
     void testOrthogonalExtraction();
+    void testFreeSurferTkRasAnatomicalAxes();
     void testSliceNormalization();
 
     // MriVolData convenience-API tests
@@ -227,6 +228,58 @@ void TestMriSlicer::testOrthogonalExtraction()
 
 //=============================================================================================================
 
+void TestMriSlicer::testFreeSurferTkRasAnatomicalAxes()
+{
+    const QVector<int> dims = {3, 5, 7};
+    QVector<float> volData(dims[0] * dims[1] * dims[2]);
+    for (int z = 0; z < dims[2]; ++z) {
+        for (int y = 0; y < dims[1]; ++y) {
+            for (int x = 0; x < dims[0]; ++x) {
+                volData[x + dims[0] * (y + dims[1] * z)] = static_cast<float>(x + 10 * y + 100 * z);
+            }
+        }
+    }
+
+    Matrix4f fsTkr = Matrix4f::Identity();
+    fsTkr.block<3, 3>(0, 0).setZero();
+    fsTkr(0, 0) = -1.0f;
+    fsTkr(2, 1) = -1.0f;
+    fsTkr(1, 2) =  1.0f;
+
+    QCOMPARE(MriSlicer::voxelAxisForOrientation(fsTkr, SliceOrientation::Axial), 1);
+    QCOMPARE(MriSlicer::voxelAxisForOrientation(fsTkr, SliceOrientation::Coronal), 2);
+    QCOMPARE(MriSlicer::voxelAxisForOrientation(fsTkr, SliceOrientation::Sagittal), 0);
+
+    QCOMPARE(MriSlicer::dimensionForOrientation(dims, fsTkr, SliceOrientation::Axial), dims[1]);
+    QCOMPARE(MriSlicer::dimensionForOrientation(dims, fsTkr, SliceOrientation::Coronal), dims[2]);
+    QCOMPARE(MriSlicer::dimensionForOrientation(dims, fsTkr, SliceOrientation::Sagittal), dims[0]);
+
+    const Vector3i voxel(1, 2, 3);
+    const Vector3f ras = MriSlicer::voxelToRas(fsTkr, voxel);
+    const QVector<MriSliceImage> slices = MriSlicer::extractOrthogonal(volData, dims, fsTkr, ras);
+
+    QCOMPARE(slices.size(), 3);
+    QCOMPARE(slices[0].orientation, SliceOrientation::Axial);
+    QCOMPARE(slices[0].sliceIndex, voxel.y());
+    QCOMPARE(slices[0].width, dims[0]);
+    QCOMPARE(slices[0].height, dims[2]);
+    QVERIFY(slices[0].sliceToRas.col(2).head<3>().isApprox(fsTkr.col(1).head<3>()));
+
+    QCOMPARE(slices[1].orientation, SliceOrientation::Coronal);
+    QCOMPARE(slices[1].sliceIndex, voxel.z());
+    QCOMPARE(slices[1].width, dims[0]);
+    QCOMPARE(slices[1].height, dims[1]);
+    QVERIFY(slices[1].sliceToRas.col(2).head<3>().isApprox(fsTkr.col(2).head<3>()));
+
+    QCOMPARE(slices[2].orientation, SliceOrientation::Sagittal);
+    QCOMPARE(slices[2].sliceIndex, voxel.x());
+    QCOMPARE(slices[2].width, dims[2]);
+    QCOMPARE(slices[2].height, dims[1]);
+    QVERIFY(slices[2].sliceToRas.col(2).head<3>().isApprox(fsTkr.col(0).head<3>()));
+}
+
+//=============================================================================================================
+
 void TestMriSlicer::testSliceNormalization()
 {
     // Slice pixels should be normalized to [0, 1]
@@ -281,8 +334,9 @@ void TestMriSlicer::testVolDataSliceOverload()
 {
     int midAxial = m_dims[2] / 2;
 
-    // Extract via flat-array API using the MriVolData's own vox2ras
-    Matrix4f volVox2ras = m_vol.computeVox2Ras();
+    // Extract via flat-array API using the same tkRAS transform as the
+    // MriVolData convenience overloads.
+    Matrix4f volVox2ras = m_vol.computeVox2RasTkr();
     QVector<float> flat = m_vol.voxelDataAsFloat();
     QVector<int>   dims = m_vol.dims();
 
@@ -306,8 +360,9 @@ void TestMriSlicer::testVolDataSliceOverload()
 
 void TestMriSlicer::testVolDataOrthogonalOverload()
 {
-    // Use a RAS point in meters (computeVox2Ras returns meters)
-    Matrix4f volVox2ras = m_vol.computeVox2Ras();
+    // Use a RAS point in meters (computeVox2RasTkr returns meters), matching
+    // the MriVolData convenience overloads.
+    Matrix4f volVox2ras = m_vol.computeVox2RasTkr();
     QVector<float> flat = m_vol.voxelDataAsFloat();
     QVector<int>   dims = m_vol.dims();
 
@@ -339,7 +394,7 @@ void TestMriSlicer::testVolDataRasRoundTrip()
                << Vector3i(10, 3, 8)
                << Vector3i(1, 12, 7);
 
-    Matrix4f volVox2ras = m_vol.computeVox2Ras();
+    Matrix4f volVox2ras = m_vol.computeVox2RasTkr();
 
     for (const auto& vox : testVoxels) {
         // Via flat-array API

@@ -21,6 +21,7 @@
 #include "renderable/dipoleobject.h"
 #include "renderable/networkobject.h"
 #include "renderable/videooverlay.h"
+#include "renderable/sliceobject.h"
 #include "core/surfacekeys.h"
 #include "core/dataloader.h"
 #include "input/raypicker.h"
@@ -48,6 +49,8 @@
 #include <QTimer>
 #include <QMenu>
 #include <QStandardItem>
+#include <QCoreApplication>
+#include <QElapsedTimer>
 #include <algorithm>
 #include <cmath>
 
@@ -864,6 +867,61 @@ void BrainView::saveSnapshot()
 
 //=============================================================================================================
 
+bool BrainView::savePng(const QString &path, int width, int height,
+                        const QString &surfaceType)
+{
+    // Realise the widget off-screen — QRhi init still runs because
+    // the widget is technically "shown", but no window-manager surface
+    // is created.  Same pattern as skigen-plot Figure::save().
+    setAttribute(Qt::WA_DontShowOnScreen, true);
+    resize(width, height);
+
+    // Set the surface type filter so the render loop matches the
+    // loaded surface names (e.g. "white" vs default "pial").
+    m_singleView.surfaceType = surfaceType;
+
+    show();
+
+    // Spin the event loop until QRhi is initialised, at least one
+    // frame has been rendered (m_renderer becomes non-null), and the
+    // surface map is populated.
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 5000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 16);
+        if (m_renderer && !m_surfaces.isEmpty())
+            break;
+    }
+
+    if (!m_renderer) {
+        hide();
+        setAttribute(Qt::WA_DontShowOnScreen, false);
+        return false;
+    }
+
+    // Force a dirty scene so the next grab renders everything.
+    m_sceneDirty = true;
+    updateSceneBounds();
+
+    // Pump a few more frames so pipeline resources are fully created.
+    for (int i = 0; i < 5; ++i)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 16);
+
+    // QRhiWidget::grabFramebuffer() internally creates an offscreen
+    // frame, calls render(), and reads back the texture.
+    QImage img = grabFramebuffer();
+
+    hide();
+    setAttribute(Qt::WA_DontShowOnScreen, false);
+
+    if (img.isNull())
+        return false;
+
+    return img.save(path, "PNG");
+}
+
+//=============================================================================================================
+
 void BrainView::showSingleView()
 {
     m_viewMode = SingleView;
@@ -1495,6 +1553,15 @@ void BrainView::render(QRhiCommandBuffer *cb)
             m_renderer->prepareVideoOverlay(rhi(), preUpload, m_videoOverlay.get());
         }
 
+        // Prepare MRI slice textures and vertex data
+        for (int i = 0; i < kMaxSliceSlots; ++i) {
+            if (m_slices[i] && m_sliceVisible[i]) {
+                m_renderer->prepareSlice(rhi(), preUpload, m_slices[i], i);
+            } else {
+                m_renderer->prepareSlice(rhi(), preUpload, nullptr, i);
+            }
+        }
+
 #ifdef __EMSCRIPTEN__
         // WORKAROUND(QRhi-GLES2): Single merged buffer for ALL surfaces.
         // The Qt QRhi GLES2/WebGL backend only renders the first
@@ -1799,6 +1866,16 @@ void BrainView::render(QRhiCommandBuffer *cb)
         item.uniformOffset = m_renderer->prepareSurfaceDraw(surfBatch, batchData, item.surface);
     }
 
+    // Batch MRI slice uniform uploads into the same batch
+    int sliceOffsets[kMaxSliceSlots] = {-1, -1, -1};
+    if (sv.visibility.mriSlices) {
+        for (int i = 0; i < kMaxSliceSlots; ++i) {
+            if (m_slices[i] && m_sliceVisible[i]) {
+                sliceOffsets[i] = m_renderer->prepareSliceDraw(surfBatch, sceneData, i);
+            }
+        }
+    }
+
     cb->resourceUpdate(surfBatch);
 
     // Set viewport/scissor once for all batched draws
@@ -1808,6 +1885,17 @@ void BrainView::render(QRhiCommandBuffer *cb)
     // Issue all draw calls — no resource updates or state resets between them
     for (const auto &item : opaqueDraws)
         m_renderer->issueSurfaceDraw(cb, item.surface, item.mode, item.uniformOffset);
+
+    // Issue MRI slice draws after opaque surfaces but before the holographic
+    // brain.  Background voxels are discarded in the shader; remaining anatomy
+    // alpha-blends into the framebuffer.  The subsequent holographic additive
+    // pass (SrcAlpha + One) adds its glow on top without being dimmed.
+    // depthTest=true, depthWrite=false keeps slices behind opaque geometry.
+    for (int i = 0; i < kMaxSliceSlots; ++i) {
+        if (sliceOffsets[i] >= 0) {
+            m_renderer->issueSliceDraw(cb, i, sliceOffsets[i]);
+        }
+    }
 
     BrainSurface *videoOverlayTargetSurface = nullptr;
     const bool hasVideoOverlay = m_videoOverlay
@@ -3150,33 +3238,119 @@ void BrainView::clearLiveRay()
 
 void BrainView::setProbeVisualization(const QVector3D& tip, const QVector3D& direction,
                                        float length, const QColor& color,
-                                       const QColor& glowColor)
+                                       const QColor& glowColor,
+                                       const QQuaternion& orientation)
 {
     // Remove previous probe surfaces
     m_surfaces.remove(QLatin1String("dig_probe_shaft"));
     m_surfaces.remove(QLatin1String("dig_probe_tip"));
     m_surfaces.remove(QLatin1String("dig_probe_tipglow"));
+    m_surfaces.remove(QLatin1String("dig_probe_axis_x"));
+    m_surfaces.remove(QLatin1String("dig_probe_axis_y"));
+    m_surfaces.remove(QLatin1String("dig_probe_axis_z"));
+    m_surfaces.remove(QLatin1String("dig_probe_axis_x_tip"));
+    m_surfaces.remove(QLatin1String("dig_probe_axis_y_tip"));
+    m_surfaces.remove(QLatin1String("dig_probe_axis_z_tip"));
+    m_surfaces.remove(QLatin1String("dig_probe_axis_xn_tip"));
+    m_surfaces.remove(QLatin1String("dig_probe_axis_yn_tip"));
+    m_surfaces.remove(QLatin1String("dig_probe_axis_zn_tip"));
+    m_surfaces.remove(QLatin1String("dig_probe_cross_x"));
+    m_surfaces.remove(QLatin1String("dig_probe_cross_y"));
+    m_surfaces.remove(QLatin1String("dig_probe_cross_z"));
 
-    // Shaft: hair-thin hint line — just enough to show direction
-    const QVector3D shaftEnd = tip - direction * length;
-    constexpr float kShaftRadius = 0.0003f; // 0.3 mm — barely visible hint
-    auto shaft = MeshFactory::createCylinder(tip, shaftEnd, kShaftRadius, color);
-    shaft->setVisible(true);
-    m_surfaces[QStringLiteral("dig_probe_shaft")] = shaft;
+    // Shaft: only drawn when length > 0
+    if (length > 0.0f && !direction.isNull()) {
+        const QVector3D shaftEnd = tip - direction * length;
+        constexpr float kShaftRadius = 0.0015f;
+        auto shaft = MeshFactory::createCylinder(tip, shaftEnd, kShaftRadius, color);
+        shaft->setVisible(true);
+        m_surfaces[QStringLiteral("dig_probe_shaft")] = shaft;
+    }
 
-    // Tip: pinpoint sphere — the focal point of the probe
-    constexpr float kTipRadius = 0.0007f; // 0.7 mm — needle-point precision
+    // Tip: the focal point of the probe
+    constexpr float kTipRadius = 0.0010f; // 1.0 mm
     auto tipSurf = MeshFactory::createBatchedSpheres({tip}, kTipRadius, color);
     tipSurf->setVisible(true);
     m_surfaces[QStringLiteral("dig_probe_tip")] = tipSurf;
 
-    // Glow aura: visible halo around the tip that pulses with the
-    // incoming glowColor alpha — large enough to clearly surround the core.
+    // Glow aura: subtle halo around the tip
     if (glowColor.alpha() > 0) {
-        constexpr float kGlowTipRadius = 0.004f; // 4 mm — clearly visible pulse ring
+        constexpr float kGlowTipRadius = 0.003f; // 3 mm glow
         auto tipGlow = MeshFactory::createBatchedSpheres({tip}, kGlowTipRadius, glowColor);
         tipGlow->setVisible(true);
         m_surfaces[QStringLiteral("dig_probe_tipglow")] = tipGlow;
+    }
+
+    // --- Crosshair rotated with probe orientation (X=red, Y=green, Z=blue) ---
+    if (!orientation.isNull()) {
+        constexpr float kCrossLen    = 0.008f;  // 8 mm per arm
+        constexpr float kCrossRadius = 0.0002f; // 0.2 mm — hair-thin
+
+        const QVector3D xDir = orientation.rotatedVector(QVector3D(1, 0, 0)).normalized();
+        const QVector3D yDir = orientation.rotatedVector(QVector3D(0, 1, 0)).normalized();
+        const QVector3D zDir = orientation.rotatedVector(QVector3D(0, 0, 1)).normalized();
+
+        struct CrossDef { QVector3D dir; QColor color; QString key; };
+        const CrossDef cross[] = {
+            { xDir, QColor(255,  50,  50, 160), QStringLiteral("dig_probe_cross_x") },
+            { yDir, QColor( 50, 220,  50, 160), QStringLiteral("dig_probe_cross_y") },
+            { zDir, QColor( 80, 140, 255, 160), QStringLiteral("dig_probe_cross_z") },
+        };
+        for (const auto& c : cross) {
+            const QVector3D from = tip - c.dir * kCrossLen;
+            const QVector3D to   = tip + c.dir * kCrossLen;
+            auto cyl = MeshFactory::createCylinder(from, to, kCrossRadius, c.color);
+            cyl->setVisible(true);
+            m_surfaces[c.key] = cyl;
+        }
+    }
+
+    // --- Debug coordinate frame (X=red, Y=green, Z=blue) ---
+    if (!orientation.isNull()) {
+        constexpr float kAxisLen    = 0.012f;  // 12 mm per axis arm
+        constexpr float kAxisRadius = 0.0004f; // 0.4 mm — thin axis lines
+        constexpr float kPosTipR    = 0.0012f; // 1.2 mm — positive-end sphere
+        constexpr float kNegTipR    = 0.0006f; // 0.6 mm — negative-end dot (smaller)
+
+        const QVector3D xDir = orientation.rotatedVector(QVector3D(1, 0, 0)).normalized();
+        const QVector3D yDir = orientation.rotatedVector(QVector3D(0, 1, 0)).normalized();
+        const QVector3D zDir = orientation.rotatedVector(QVector3D(0, 0, 1)).normalized();
+
+        struct AxisDef {
+            QVector3D dir;
+            QColor    color;
+            QString   cylKey, posTipKey, negTipKey;
+        };
+        const AxisDef axes[] = {
+            { xDir, QColor(255,  50,  50), QStringLiteral("dig_probe_axis_x"),
+              QStringLiteral("dig_probe_axis_x_tip"), QStringLiteral("dig_probe_axis_xn_tip") },
+            { yDir, QColor( 50, 220,  50), QStringLiteral("dig_probe_axis_y"),
+              QStringLiteral("dig_probe_axis_y_tip"), QStringLiteral("dig_probe_axis_yn_tip") },
+            { zDir, QColor( 80, 140, 255), QStringLiteral("dig_probe_axis_z"),
+              QStringLiteral("dig_probe_axis_z_tip"), QStringLiteral("dig_probe_axis_zn_tip") },
+        };
+
+        for (const auto& a : axes) {
+            const QVector3D posEnd = tip + a.dir * kAxisLen;
+            const QVector3D negEnd = tip - a.dir * kAxisLen;
+
+            // Full axis cylinder from -axis to +axis through the tip
+            auto cyl = MeshFactory::createCylinder(negEnd, posEnd, kAxisRadius, a.color);
+            cyl->setVisible(true);
+            m_surfaces[a.cylKey] = cyl;
+
+            // Positive tip: larger sphere (the "+" end)
+            auto posTip = MeshFactory::createBatchedSpheres({posEnd}, kPosTipR, a.color);
+            posTip->setVisible(true);
+            m_surfaces[a.posTipKey] = posTip;
+
+            // Negative tip: smaller dot (the "-" end)
+            QColor dimColor = a.color;
+            dimColor.setAlpha(120);
+            auto negTip = MeshFactory::createBatchedSpheres({negEnd}, kNegTipR, dimColor);
+            negTip->setVisible(true);
+            m_surfaces[a.negTipKey] = negTip;
+        }
     }
 
     m_sceneDirty = true;
@@ -3189,6 +3363,18 @@ void BrainView::clearProbeVisualization()
     removed |= m_surfaces.remove(QLatin1String("dig_probe_shaft"));
     removed |= m_surfaces.remove(QLatin1String("dig_probe_tip"));
     removed |= m_surfaces.remove(QLatin1String("dig_probe_tipglow"));
+    removed |= m_surfaces.remove(QLatin1String("dig_probe_axis_x"));
+    removed |= m_surfaces.remove(QLatin1String("dig_probe_axis_y"));
+    removed |= m_surfaces.remove(QLatin1String("dig_probe_axis_z"));
+    removed |= m_surfaces.remove(QLatin1String("dig_probe_axis_x_tip"));
+    removed |= m_surfaces.remove(QLatin1String("dig_probe_axis_y_tip"));
+    removed |= m_surfaces.remove(QLatin1String("dig_probe_axis_z_tip"));
+    removed |= m_surfaces.remove(QLatin1String("dig_probe_axis_xn_tip"));
+    removed |= m_surfaces.remove(QLatin1String("dig_probe_axis_yn_tip"));
+    removed |= m_surfaces.remove(QLatin1String("dig_probe_axis_zn_tip"));
+    removed |= m_surfaces.remove(QLatin1String("dig_probe_cross_x"));
+    removed |= m_surfaces.remove(QLatin1String("dig_probe_cross_y"));
+    removed |= m_surfaces.remove(QLatin1String("dig_probe_cross_z"));
     if (removed) {
         m_sceneDirty = true;
         update();
@@ -3389,6 +3575,36 @@ void BrainView::pushVideoOverlayFrame(const QImage &frame)
     if (m_videoOverlay->isEnabled()) { m_sceneDirty = true; update(); }
 }
 
+void BrainView::setVideoDepthEnabled(bool enabled)
+{
+    if (!m_videoOverlay) return;
+    m_videoOverlay->setDepthEnabled(enabled);
+    if (m_videoOverlay->isEnabled()) { m_sceneDirty = true; update(); }
+}
+
+void BrainView::setVideoDepthScale(float scale)
+{
+    if (!m_videoOverlay) return;
+    m_videoOverlay->setDepthScale(std::clamp(scale, 0.0f, 1.0f));
+    if (m_videoOverlay->isEnabled()) { m_sceneDirty = true; update(); }
+}
+
+void BrainView::setVideoDepthSteps(int steps)
+{
+    if (!m_videoOverlay) return;
+    m_videoOverlay->setDepthSteps(std::clamp(steps, 8, 64));
+    if (m_videoOverlay->isEnabled()) { m_sceneDirty = true; update(); }
+}
+
+void BrainView::pushVideoDepthFrame(const QImage &depthFrame)
+{
+    if (!m_videoOverlay) return;
+    m_videoOverlay->setDepthFrame(depthFrame);
+    if (m_videoOverlay->isEnabled() && m_videoOverlay->isDepthEnabled()) {
+        m_sceneDirty = true; update();
+    }
+}
+
 bool BrainView::intersectWorldRay(const QVector3D& origin, const QVector3D& direction, QVector3D& hitPoint) const
 {
     // Test against ALL surfaces (no SubView visibility filter) so
@@ -3425,4 +3641,34 @@ bool BrainView::intersectWorldRay(const QVector3D& origin, const QVector3D& dire
         }
     }
     return found;
+}
+
+//=============================================================================================================
+// MRI slice rendering
+//=============================================================================================================
+
+void BrainView::setSlice(int slotIndex, DISP3DLIB::SliceObject *slice)
+{
+    if (slotIndex < 0 || slotIndex >= kMaxSliceSlots) return;
+    m_slices[slotIndex] = slice;
+    m_sceneDirty = true;
+    update();
+}
+
+void BrainView::setSliceVisible(int slotIndex, bool visible)
+{
+    if (slotIndex < 0 || slotIndex >= kMaxSliceSlots) return;
+    m_sliceVisible[slotIndex] = visible;
+    m_sceneDirty = true;
+    update();
+}
+
+//=============================================================================================================
+
+void BrainView::setMriSlicesVisible(bool visible)
+{
+    auto &profile = visibilityProfileForTarget(m_visualizationEditTarget);
+    profile.mriSlices = visible;
+    saveMultiViewSettings();
+    m_sceneDirty = true; update();
 }

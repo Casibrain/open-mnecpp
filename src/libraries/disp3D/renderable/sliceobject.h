@@ -59,9 +59,13 @@ namespace DISP3DLIB
  */
 enum class SliceOrientation {
     Axial = 0,      /**< XY plane (Z = const). */
-    Sagittal,        /**< YZ plane (X = const). */
-    Coronal          /**< XZ plane (Y = const). */
+    Coronal = 1,    /**< XZ plane (Y = const). */
+    Sagittal = 2    /**< YZ plane (X = const). */
 };
+
+static_assert(static_cast<int>(SliceOrientation::Axial) == 0, "MRI axial slice slot must be 0");
+static_assert(static_cast<int>(SliceOrientation::Coronal) == 1, "MRI coronal slice slot must be 1");
+static_assert(static_cast<int>(SliceOrientation::Sagittal) == 2, "MRI sagittal slice slot must be 2");
 
 //=============================================================================================================
 /**
@@ -89,6 +93,20 @@ public:
                   SliceOrientation orientation,
                   int sliceIndex,
                   const Eigen::Matrix4d& voxelToWorld);
+
+    //=========================================================================================================
+    /**
+     * Set the slice image data with an explicit image-to-world transform.
+     *
+     * @param[in] image         Greyscale slice image (QImage::Format_Grayscale8 or 16).
+     * @param[in] orientation   Anatomical orientation of the slice.
+     * @param[in] sliceIndex    Index along the perpendicular voxel axis.
+     * @param[in] imageToWorld  4x4 transform from image coordinates (column, row, 0) to RAS.
+     */
+    void setSliceToWorld(const QImage& image,
+                         SliceOrientation orientation,
+                         int sliceIndex,
+                         const Eigen::Matrix4d& imageToWorld);
 
     //=========================================================================================================
     /**
@@ -170,7 +188,7 @@ private:
     Eigen::Matrix4d     m_voxelToWorld = Eigen::Matrix4d::Identity();
     float               m_windowCenter = 0.5f;
     float               m_windowWidth  = 1.0f;
-    float               m_opacity      = 1.0f;
+    float               m_opacity      = 0.7f;
 
     // Cached corners in world coordinates (computed in setSlice)
     Eigen::Vector3d     m_corner00;  // (0,0) UV corner
