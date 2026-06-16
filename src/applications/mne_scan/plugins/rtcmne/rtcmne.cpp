@@ -138,7 +138,22 @@ void RtcMne::init()
     // Inits
     m_pAnnotationSet = FsAnnotationSet::SPtr(new FsAnnotationSet(m_sAtlasDir+"/lh.aparc.a2009s.annot", m_sAtlasDir+"/rh.aparc.a2009s.annot"));
     m_pSurfaceSet = FsSurfaceSet::SPtr(new FsSurfaceSet(m_sSurfaceDir+"/lh.orig", m_sSurfaceDir+"/rh.orig"));
-    m_mriHeadTrans = FIFFLIB::FiffCoordTrans(m_fMriHeadTrans);
+
+    // Load MRI-head transformation with proper error handling
+    // FiffCoordTrans constructor throws std::runtime_error if file cannot be read
+    try {
+        if(m_fMriHeadTrans.exists() && m_fMriHeadTrans.open(QIODevice::ReadOnly)) {
+            m_mriHeadTrans = FIFFLIB::FiffCoordTrans(m_fMriHeadTrans);
+            m_fMriHeadTrans.close();
+        } else {
+            qWarning() << "RtcMne::init() - MRI-head transformation file not found or cannot be opened:" << m_fMriHeadTrans.fileName();
+        }
+    } catch(const std::runtime_error& e) {
+        qWarning() << "RtcMne::init() - Failed to load MRI-head transformation:" << e.what() << "File:" << m_fMriHeadTrans.fileName();
+        if(m_fMriHeadTrans.isOpen()) {
+            m_fMriHeadTrans.close();
+        }
+    }
 
     // Input
     m_pRTMSAInput = PluginInputData<RealTimeMultiSampleArray>::create(this, "MNE RTMSA In", "MNE real-time multi sample array input data");
