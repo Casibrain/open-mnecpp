@@ -62,19 +62,19 @@ void SliceObject::setSlice(const QImage& image,
         c01 << 0, h, sliceIndex, 1;
         c11 << w, h, sliceIndex, 1;
         break;
-    case SliceOrientation::Sagittal:
-        //  u → Y,  v → Z,  slice along X
-        c00 << sliceIndex, 0, 0, 1;
-        c10 << sliceIndex, w, 0, 1;
-        c01 << sliceIndex, 0, h, 1;
-        c11 << sliceIndex, w, h, 1;
-        break;
     case SliceOrientation::Coronal:
         //  u → X,  v → Z,  slice along Y
         c00 << 0, sliceIndex, 0, 1;
         c10 << w, sliceIndex, 0, 1;
         c01 << 0, sliceIndex, h, 1;
         c11 << w, sliceIndex, h, 1;
+        break;
+    case SliceOrientation::Sagittal:
+        //  u → Y,  v → Z,  slice along X
+        c00 << sliceIndex, 0, 0, 1;
+        c10 << sliceIndex, w, 0, 1;
+        c01 << sliceIndex, 0, h, 1;
+        c11 << sliceIndex, w, h, 1;
         break;
     }
 
@@ -88,6 +88,31 @@ void SliceObject::setSlice(const QImage& image,
     m_corner10 = w10.head<3>();
     m_corner01 = w01.head<3>();
     m_corner11 = w11.head<3>();
+}
+
+//=============================================================================================================
+
+void SliceObject::setSliceToWorld(const QImage& image,
+                                  SliceOrientation orientation,
+                                  int sliceIndex,
+                                  const Eigen::Matrix4d& imageToWorld)
+{
+    m_image       = image;
+    m_orientation = orientation;
+    m_sliceIndex  = sliceIndex;
+
+    const int w = m_image.width();
+    const int h = m_image.height();
+
+    const Eigen::Vector4d c00(0.0, 0.0, 0.0, 1.0);
+    const Eigen::Vector4d c10(static_cast<double>(w), 0.0, 0.0, 1.0);
+    const Eigen::Vector4d c01(0.0, static_cast<double>(h), 0.0, 1.0);
+    const Eigen::Vector4d c11(static_cast<double>(w), static_cast<double>(h), 0.0, 1.0);
+
+    m_corner00 = (imageToWorld * c00).head<3>();
+    m_corner10 = (imageToWorld * c10).head<3>();
+    m_corner01 = (imageToWorld * c01).head<3>();
+    m_corner11 = (imageToWorld * c11).head<3>();
 }
 
 //=============================================================================================================

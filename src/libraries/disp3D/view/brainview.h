@@ -63,7 +63,7 @@ class BrainRenderer;
 class BrainSurface;
 class DipoleObject;
 class NetworkObject;
-namespace DISP3DLIB { class VideoOverlay; }
+namespace DISP3DLIB { class VideoOverlay; class SliceObject; }
 namespace CONNECTIVITYLIB { class Network; }
 
 //=============================================================================================================
@@ -291,6 +291,24 @@ public slots:
      * Save a snapshot of the current view to a file.
      */
     void saveSnapshot();
+
+    //=========================================================================================================
+    /**
+     * Render the scene offscreen and save to a PNG file.
+     *
+     * Uses Qt::WA_DontShowOnScreen so no window manager surface is
+     * created — works on headless CI runners without Xvfb. The widget
+     * is temporarily shown to trigger QRhi initialization, then
+     * grabFramebuffer() reads pixels back from the GPU.
+     *
+     * @param[in] path        Output PNG file path.
+     * @param[in] width       Render width in pixels (default 1200).
+     * @param[in] height      Render height in pixels (default 800).
+     * @param[in] surfaceType Surface type to match (default "pial").
+     * @return true on success, false on failure.
+     */
+    bool savePng(const QString &path, int width = 1200, int height = 800,
+                 const QString &surfaceType = QStringLiteral("pial"));
 
     //=========================================================================================================
     /**
@@ -858,15 +876,19 @@ public slots:
      * Show a catheter-style probe visualization (cylinder shaft + sphere tip
      * with an optional pulsing glow aura).
      *
-     * @param[in] tip       Probe tip position (metres, model space).
-     * @param[in] direction Probe forward axis (unit vector, model space).
-     * @param[in] length    Visible shaft length behind the tip (metres).
-     * @param[in] color     Probe core color.
-     * @param[in] glowColor Outer glow aura color (default: transparent = no glow).
+     * @param[in] tip         Probe tip position (metres, model space).
+     * @param[in] direction   Probe forward axis (unit vector, model space).
+     * @param[in] length      Visible shaft length behind the tip (metres).
+     * @param[in] color       Probe core color.
+     * @param[in] glowColor   Outer glow aura color (default: transparent = no glow).
+     * @param[in] orientation Full probe orientation for drawing a debug
+     *                        coordinate frame (X=red, Y=green, Z=blue).
+     *                        Pass a null quaternion to skip axes.
      */
     void setProbeVisualization(const QVector3D& tip, const QVector3D& direction,
                                float length, const QColor& color,
-                               const QColor& glowColor = QColor(0, 0, 0, 0));
+                               const QColor& glowColor = QColor(0, 0, 0, 0),
+                               const QQuaternion& orientation = QQuaternion(0, 0, 0, 0));
 
     /** Remove the probe visualization from the scene. */
     void clearProbeVisualization();
@@ -938,6 +960,18 @@ public slots:
     /** Push a new video frame to the overlay (e.g. from QVideoSink). */
     void pushVideoOverlayFrame(const QImage &frame);
 
+    /** Enable or disable depth-based parallax relief on the video overlay. */
+    void setVideoDepthEnabled(bool enabled);
+
+    /** Set the parallax occlusion displacement scale [0..1]. */
+    void setVideoDepthScale(float scale);
+
+    /** Set the number of POM ray-march steps (quality vs. performance). */
+    void setVideoDepthSteps(int steps);
+
+    /** Push a monocular depth map corresponding to the current video frame. */
+    void pushVideoDepthFrame(const QImage &depthFrame);
+
     /**
      * @brief Intersect a world-space ray with loaded scene geometry.
      *
@@ -950,6 +984,33 @@ public slots:
      * @return @c true if the ray hits a surface; @c false otherwise.
      */
     bool intersectWorldRay(const QVector3D& origin, const QVector3D& direction, QVector3D& hitPoint) const;
+
+    //=========================================================================================================
+    // ── MRI slice rendering ────────────────────────────────────────────
+    //=========================================================================================================
+
+    /**
+     * Set an MRI slice to be rendered in the 3-D scene.
+     *
+     * @param[in] slotIndex  Slot index (0=axial, 1=coronal, 2=sagittal).
+     * @param[in] slice      Pointer to SliceObject, or nullptr to hide.
+     */
+    void setSlice(int slotIndex, DISP3DLIB::SliceObject *slice);
+
+    /**
+     * Toggle visibility of an MRI slice slot.
+     *
+     * @param[in] slotIndex  Slot index (0=axial, 1=coronal, 2=sagittal).
+     * @param[in] visible    Whether this slice should be drawn.
+     */
+    void setSliceVisible(int slotIndex, bool visible);
+
+    /**
+     * Toggle MRI slice visibility for the current edit-target viewport.
+     *
+     * @param[in] visible  Whether MRI slices should be drawn in the active viewport.
+     */
+    void setMriSlicesVisible(bool visible);
 
 signals:
     //=========================================================================================================
@@ -1180,6 +1241,11 @@ private:
     std::unique_ptr<DipoleObject> m_dipoles;        /**< Standalone dipole set (loaded via file). */
     std::unique_ptr<NetworkObject> m_network;       /**< Connectivity network visualization. */
     std::unique_ptr<DISP3DLIB::VideoOverlay> m_videoOverlay; /**< Live RGB video overlay decal. */
+
+    // ── MRI slices ─────────────────────────────────────────────────────
+    static constexpr int kMaxSliceSlots = 3;
+    DISP3DLIB::SliceObject *m_slices[kMaxSliceSlots] = {};   /**< Non-owning pointers to slice data. */
+    bool m_sliceVisible[kMaxSliceSlots] = {true, true, true}; /**< Per-slot visibility flags. */
 
     /** Update the scene bounding box based on visible objects. */
     void updateSceneBounds();

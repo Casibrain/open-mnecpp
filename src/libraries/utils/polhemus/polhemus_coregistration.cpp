@@ -237,29 +237,10 @@ bool PolhemusCoregistration::computeRegistration()
         const QVector3D mLpa = m_modelFid[static_cast<int>(FiducialId::LPA)];
         const QVector3D mRpa = m_modelFid[static_cast<int>(FiducialId::RPA)];
 
-        // Debug: raw fiducial positions
-        qInfo().nospace()
-            << "Registration — pen fiducial positions (Polhemus world, mm):"
-            << "\n    NAS: (" << pNas.x()*1000.f << ", " << pNas.y()*1000.f << ", " << pNas.z()*1000.f << ")"
-            << "\n    LPA: (" << pLpa.x()*1000.f << ", " << pLpa.y()*1000.f << ", " << pLpa.z()*1000.f << ")"
-            << "\n    RPA: (" << pRpa.x()*1000.f << ", " << pRpa.y()*1000.f << ", " << pRpa.z()*1000.f << ")";
-        qInfo().nospace()
-            << "Registration — model fiducial positions (MRI/surface-RAS, mm):"
-            << "\n    NAS: (" << mNas.x()*1000.f << ", " << mNas.y()*1000.f << ", " << mNas.z()*1000.f << ")"
-            << "\n    LPA: (" << mLpa.x()*1000.f << ", " << mLpa.y()*1000.f << ", " << mLpa.z()*1000.f << ")"
-            << "\n    RPA: (" << mRpa.x()*1000.f << ", " << mRpa.y()*1000.f << ", " << mRpa.z()*1000.f << ")";
-        qInfo().nospace()
-            << "Registration — axis mirror: mirrorX=" << m_mirrorX << " mirrorY=" << m_mirrorY;
-
         // Compare pen vs model fiducial distances — should be similar for the same head
         const float mNL = (mNas - mLpa).length() * 1000.0f;
         const float mNR = (mNas - mRpa).length() * 1000.0f;
         const float mLR = (mLpa - mRpa).length() * 1000.0f;
-        qInfo().nospace()
-            << "Registration — fiducial distances (pen / model):"
-            << "\n    NAS ↔ LPA: " << dNL << " / " << mNL << " mm  (ratio " << dNL/mNL << ")"
-            << "\n    NAS ↔ RPA: " << dNR << " / " << mNR << " mm  (ratio " << dNR/mNR << ")"
-            << "\n    LPA ↔ RPA: " << dLR << " / " << mLR << " mm  (ratio " << dLR/mLR << ")";
 
         const float maxRatio = std::max({dNL/mNL, dNR/mNR, dLR/mLR});
         const float minRatio = std::min({dNL/mNL, dNR/mNR, dLR/mLR});
@@ -308,13 +289,6 @@ bool PolhemusCoregistration::computeRegistration()
         // 6. Translation
         Eigen::Vector3d t = modC - R * penC;
 
-        const Eigen::Vector3d sv = svd.singularValues();
-        qInfo().nospace()
-            << "Registration — Kabsch SVD:"
-            << "\n    det(V*Uᵀ) = " << d << (d < 0 ? " (det correction applied)" : " (no det correction)")
-            << "\n    det(R) = " << R.determinant()
-            << "\n    singular values: (" << sv(0) << ", " << sv(1) << ", " << sv(2) << ")";
-
         // 6b. Vertex disambiguation for coplanar degeneracy.
         //
         // With only 3 coplanar fiducials the SVD's 3rd singular value
@@ -340,26 +314,11 @@ bool PolhemusCoregistration::computeRegistration()
             const Eigen::Vector3d mappedCZ_alt = R_alt * penCZ + t_alt;
             const double errAlt = (mappedCZ_alt - modCZ).norm();
 
-            qInfo().nospace()
-                << "Registration — vertex disambiguation:"
-                << "\n    CZ (pen):   (" << m_penVertex.x()*1000.f << ", " << m_penVertex.y()*1000.f << ", " << m_penVertex.z()*1000.f << ") mm"
-                << "\n    CZ (model): (" << m_modelVertex.x()*1000.f << ", " << m_modelVertex.y()*1000.f << ", " << m_modelVertex.z()*1000.f << ") mm"
-                << "\n    D₃₃=" << D(2,2) << " → mapped CZ err: " << errCurrent*1000.0 << " mm"
-                << "\n    D₃₃=" << D_alt(2,2) << " → mapped CZ err: " << errAlt*1000.0 << " mm";
-
             if (errAlt < errCurrent) {
                 R = R_alt;
                 t = t_alt;
                 D = D_alt;
-                qInfo().nospace()
-                    << "Registration — vertex correction APPLIED: flipped out-of-plane direction"
-                    << " (det(R) now = " << R.determinant() << ")";
-            } else {
-                qInfo() << "Registration — vertex check passed, no flip needed.";
             }
-        } else {
-            qInfo() << "Registration — no vertex available for out-of-plane disambiguation."
-                    << "Capture CZ (pen vertex) and load BEM to enable this check.";
         }
 
         // 7. Build QMatrix4x4 worldToModel = [R | t]
@@ -370,21 +329,6 @@ bool PolhemusCoregistration::computeRegistration()
             }
             m_worldToModel(r, 3) = static_cast<float>(t(r));
         }
-
-        // Residuals
-        auto residual = [&](const char* label, const QVector3D& pw, const QVector3D& pm) {
-            QVector3D mapped = m_worldToModel.map(pw);
-            float err = (mapped - pm).length() * 1000.0f;
-            qInfo().nospace() << "  " << label
-                << ":  pen(" << pw.x()*1000.f << ", " << pw.y()*1000.f << ", " << pw.z()*1000.f << ")"
-                << " → mapped(" << mapped.x()*1000.f << ", " << mapped.y()*1000.f << ", " << mapped.z()*1000.f << ")"
-                << "  model(" << pm.x()*1000.f << ", " << pm.y()*1000.f << ", " << pm.z()*1000.f << ")"
-                << "  err=" << err << " mm";
-            return err;
-        };
-        const float rNas = residual("NAS", pNas, mNas);
-        const float rLpa = residual("LPA", pLpa, mLpa);
-        const float rRpa = residual("RPA", pRpa, mRpa);
 
         m_headToWorld.setToIdentity();
         m_headToDevice = m_deviceToWorld.inverted() * m_headToWorld;
@@ -1079,6 +1023,90 @@ bool PolhemusCoregistration::opticalUpInWorld(QVector3D& up) const
 }
 
 //=============================================================================================================
+
+bool PolhemusCoregistration::applyOpticalAxisFineAdjust(const QVector3D& targetWorldPos,
+                                                        float& correctionDeg)
+{
+    correctionDeg = 0.0f;
+    if (!m_opticalCalibValid) return false;
+
+    // Get tracker-to-world transform (same as opticalRayInWorld)
+    const QMatrix4x4& dev = m_deviceToWorld;
+    if (dev.isIdentity()) return false;
+
+    QMatrix4x4 offsetMat;
+    offsetMat.setToIdentity();
+    offsetMat.translate(m_offsetTranslation);
+    offsetMat.rotate(m_offsetRotation);
+
+    const QMatrix4x4 trackerToWorld = dev * offsetMat.inverted();
+    const QVector3D trackerPos(trackerToWorld(0, 3), trackerToWorld(1, 3), trackerToWorld(2, 3));
+    const QQuaternion trackerOri = QQuaternion::fromRotationMatrix(trackerToWorld.toGenericMatrix<3, 3>());
+
+    // Current optical center in world frame
+    const QVector3D optCenterWorld = trackerPos + trackerOri.rotatedVector(m_opticalCenterLocal);
+
+    // Desired axis direction: from optical center to the target point
+    const QVector3D toTarget = (targetWorldPos - optCenterWorld);
+    if (toTarget.length() < 0.001f) return false; // target too close to optical center
+
+    const QVector3D desiredDirWorld = toTarget.normalized();
+
+    // Current axis direction in world frame
+    const QVector3D currentDirWorld = trackerOri.rotatedVector(m_opticalAxisLocal).normalized();
+
+    // Compute correction angle
+    const float cosAngle = std::clamp(QVector3D::dotProduct(currentDirWorld, desiredDirWorld), -1.0f, 1.0f);
+    correctionDeg = std::acos(cosAngle) * (180.0f / 3.14159265358979f);
+
+    // Sanity: reject corrections > 10° — likely a user error
+    if (correctionDeg > 10.0f) {
+        qWarning().nospace() << "Optical fine adjust: correction " << correctionDeg
+            << "° exceeds 10° limit — rejected.";
+        return false;
+    }
+
+    // Save pre-adjustment axis for undo
+    if (!m_opticalFineAdjustApplied)
+        m_opticalAxisPreFineAdjust = m_opticalAxisLocal;
+
+    // Compute the rotation from current to desired direction, in world frame
+    const QQuaternion worldCorrection = QQuaternion::rotationTo(currentDirWorld, desiredDirWorld);
+
+    // Transform the correction into tracker-local frame:
+    // localCorrection = trackerOri⁻¹ * worldCorrection * trackerOri
+    const QQuaternion trackerOriInv = trackerOri.inverted();
+    const QQuaternion localCorrection = trackerOriInv * worldCorrection * trackerOri;
+
+    // Apply to the local axis
+    m_opticalAxisLocal = localCorrection.rotatedVector(m_opticalAxisLocal).normalized();
+    m_opticalFineAdjustDeg = correctionDeg;
+    m_opticalFineAdjustApplied = true;
+
+    qInfo().nospace()
+        << "Optical fine adjust applied: " << correctionDeg << "°"
+        << "\n    axis (local):   (" << m_opticalAxisLocal.x() << ", "
+        << m_opticalAxisLocal.y() << ", " << m_opticalAxisLocal.z() << ")";
+
+    emit opticalCalibrationChanged();
+    return true;
+}
+
+//=============================================================================================================
+
+void PolhemusCoregistration::clearOpticalFineAdjust()
+{
+    if (!m_opticalFineAdjustApplied) return;
+
+    m_opticalAxisLocal = m_opticalAxisPreFineAdjust;
+    m_opticalFineAdjustApplied = false;
+    m_opticalFineAdjustDeg = 0.0f;
+
+    qInfo() << "Optical fine adjust cleared — axis restored to original calibration.";
+    emit opticalCalibrationChanged();
+}
+
+//=============================================================================================================
 // Session persistence helpers
 //=============================================================================================================
 
@@ -1185,6 +1213,13 @@ void PolhemusCoregistration::saveSessionState(QSettings &settings, const QString
         saveVec3(settings, "opticalCenterLocal", m_opticalCenterLocal);
         settings.setValue("opticalCalibResidualMm", static_cast<double>(m_opticalCalibResidualMm));
         settings.setValue("opticalCalibDepthSpreadMm", static_cast<double>(m_opticalCalibDepthSpreadMm));
+
+        // Fine adjustment
+        settings.setValue("opticalFineAdjustApplied", m_opticalFineAdjustApplied);
+        if (m_opticalFineAdjustApplied) {
+            saveVec3(settings, "opticalAxisPreFineAdjust", m_opticalAxisPreFineAdjust);
+            settings.setValue("opticalFineAdjustDeg", static_cast<double>(m_opticalFineAdjustDeg));
+        }
     }
 
     // Optical calibration samples (so calibration can be re-solved after restart)
@@ -1265,6 +1300,13 @@ bool PolhemusCoregistration::restoreSessionState(QSettings &settings, const QStr
         m_opticalCenterLocal       = loadVec3(settings, "opticalCenterLocal");
         m_opticalCalibResidualMm   = static_cast<float>(settings.value("opticalCalibResidualMm", 0.0).toDouble());
         m_opticalCalibDepthSpreadMm = static_cast<float>(settings.value("opticalCalibDepthSpreadMm", 0.0).toDouble());
+
+        // Fine adjustment
+        m_opticalFineAdjustApplied = settings.value("opticalFineAdjustApplied", false).toBool();
+        if (m_opticalFineAdjustApplied) {
+            m_opticalAxisPreFineAdjust = loadVec3(settings, "opticalAxisPreFineAdjust");
+            m_opticalFineAdjustDeg = static_cast<float>(settings.value("opticalFineAdjustDeg", 0.0).toDouble());
+        }
     }
 
     // Optical calibration samples
