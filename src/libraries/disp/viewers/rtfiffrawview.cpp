@@ -73,13 +73,20 @@ RtFiffRawView::RtFiffRawView(const QString& sSettingsPath,
 #if defined(WASMBUILD) || defined(__EMSCRIPTEN__)
     rhiViewport->setApi(QRhiWidget::Api::OpenGL);
 #elif defined(Q_OS_MACOS) || defined(Q_OS_IOS)
-    rhiViewport->setApi(QRhiWidget::Api::Metal);
+    // On macOS, using QRhiWidget as QTableView viewport causes crashes in
+    // libqmacstyle.dylib during cell painting because Metal rendering
+    // conflicts with the macOS style plugin's CGContext drawing. Skip the
+    // custom viewport on macOS and use the default QTableView viewport.
+    (void)rhiViewport;
+    rhiViewport->deleteLater();
 #elif defined(Q_OS_WIN)
     rhiViewport->setApi(QRhiWidget::Api::Direct3D11);
 #else
     rhiViewport->setApi(QRhiWidget::Api::OpenGL);
 #endif
+#ifndef Q_OS_MACOS
     m_pTableView->setViewport(rhiViewport);
+#endif
 
     // Install event filter for tracking mouse movements
     m_pTableView->viewport()->installEventFilter(this);
@@ -110,13 +117,18 @@ void RtFiffRawView::updateViewport()
 #if defined(WASMBUILD) || defined(__EMSCRIPTEN__)
         rhiViewport->setApi(QRhiWidget::Api::OpenGL);
 #elif defined(Q_OS_MACOS) || defined(Q_OS_IOS)
-        rhiViewport->setApi(QRhiWidget::Api::Metal);
+        // On macOS, using QRhiWidget as QTableView viewport causes crashes
+        // in libqmacstyle.dylib. Skip custom viewport on macOS.
+        (void)rhiViewport;
+        rhiViewport->deleteLater();
 #elif defined(Q_OS_WIN)
         rhiViewport->setApi(QRhiWidget::Api::Direct3D11);
 #else
         rhiViewport->setApi(QRhiWidget::Api::OpenGL);
 #endif
+#ifndef Q_OS_MACOS
         m_pTableView->setViewport(rhiViewport);
+#endif
     }
 }
 
